@@ -9,7 +9,7 @@ const FaceAttendanceSystem = () => {
   const [recognizedPerson, setRecognizedPerson] = useState(null);
   const [loginFailed, setLoginFailed] = useState(false);
   
-  // 🔐 LIVENESS STATES
+  //LIVENESS STATES
   const [livenessType, setLivenessType] = useState('smile'); 
   const [livenessProgress, setLivenessProgress] = useState(0);
 
@@ -38,7 +38,6 @@ const FaceAttendanceSystem = () => {
     banner: (color) => ({ padding: '20px', backgroundColor: color, color: '#fff', borderRadius: '16px', textAlign: 'center' })
   };
 
-  // Logic to clear canvas visually
   const clearCanvas = () => {
     if (canvasRef.current) {
       const ctx = canvasRef.current.getContext('2d');
@@ -57,7 +56,6 @@ const FaceAttendanceSystem = () => {
 
   const runDetection = async () => {
     const faceapi = getFaceApi();
-    // Safety check: Don't run if system is in a "Result" state (Success or Fail)
     if (!faceapi || !videoRef.current || videoRef.current.paused || !streamRef.current || recognizedPerson || loginFailed) {
       requestRef.current = requestAnimationFrame(runDetection);
       return;
@@ -121,7 +119,6 @@ const FaceAttendanceSystem = () => {
   };
 
   const startCamera = async () => {
-    // 1. Force Clean Start
     stopCamera(); 
     clearCanvas();
     setRecognizedPerson(null);
@@ -156,7 +153,6 @@ const FaceAttendanceSystem = () => {
     const det = await faceapi.detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptor();
     
     if (det) {
-      // ✅ DUPLICATION CHECK PRESERVED
       if (workers.length > 0) {
         const labeled = workers.map(w => new faceapi.LabeledFaceDescriptors(w.name, [new Float32Array(w.descriptor)]));
         const matcher = new faceapi.FaceMatcher(labeled, 0.45);
