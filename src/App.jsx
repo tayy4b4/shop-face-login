@@ -56,78 +56,111 @@ const FaceAttendanceSystem = () => {
   };
 
   const runDetection = async () => {
-    const faceapi = getFaceApi();
-    
-    if (!faceapi || !videoRef.current || videoRef.current.paused || !streamRef.current || recognizedPerson || loginFailed) {
+  const faceapi = getFaceApi();
+
+  if (
+    !faceapi ||
+    !videoRef.current ||
+    videoRef.current.paused ||
+    !streamRef.current ||
+    recognizedPerson ||
+    loginFailed
+  ) {
+    requestRef.current = requestAnimationFrame(runDetection);
+    return;
+  }
+
+  const detection = await faceapi
+    .detectSingleFace(
+      videoRef.current,
+      new faceapi.TinyFaceDetectorOptions({ inputSize: 224 })
+    )
+    .withFaceLandmarks()
+    .withFaceExpressions()
+    .withFaceDescriptor();
+
+  if (!detection || !canvasRef.current) {
+    const ctx = canvasRef.current?.getContext('2d');
+    ctx?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    requestRef.current = requestAnimationFrame(runDetection);
+    return;
+  }
+
+  const displaySize = {
+    width: videoRef.current.clientWidth,
+    height: videoRef.current.clientHeight
+  };
+
+  if (
+    canvasRef.current.width !== displaySize.width ||
+    canvasRef.current.height !== displaySize.height
+  ) {
+    faceapi.matchDimensions(canvasRef.current, displaySize);
+  }
+
+  const ctx = canvasRef.current.getContext('2d');
+  ctx.clearRect(0, 0, displaySize.width, displaySize.height);
+
+  const resized = faceapi.resizeResults(detection, displaySize);
+  faceapi.draw.drawFaceLandmarks(canvasRef.current, resized);
+
+  /*LOGIN FLOW*/
+  if (mode === 'login') {
+    let challengeMet = false;
+
+    if (livenessType === 'smile') {
+      const smileProb = detection.expressions.happy;
+      setLivenessProgress(smileProb * 100);
+      if (smileProb > 0.25) challengeMet = true;
+    } else {
+      const ratio = getMouthRatio(detection.landmarks);
+      setLivenessProgress(Math.min(ratio * 400, 100));
+      if (ratio > 0.18) challengeMet = true;
+    }
+
+    if (!challengeMet) {
       requestRef.current = requestAnimationFrame(runDetection);
       return;
     }
 
-    const detection = await faceapi
-      .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions({ inputSize: 224 }))
-      .withFaceLandmarks()
-      .withFaceExpressions()
-      .withFaceDescriptor();
+    setLivenessProgress(100);
 
-    if (canvasRef.current && detection) {
-      const displaySize = { 
-        width: videoRef.current.clientWidth, 
-        height: videoRef.current.clientHeight 
-      };
-
-      if (canvasRef.current.width !== displaySize.width || canvasRef.current.height !== displaySize.height) {
-        faceapi.matchDimensions(canvasRef.current, displaySize);
-      }
-
-      const ctx = canvasRef.current.getContext('2d');
-      ctx.clearRect(0, 0, displaySize.width, displaySize.height);
-
-      const resizedResults = faceapi.resizeResults(detection, displaySize);
-      
-      faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedResults);
-
-      if (mode === 'login') {
-        const labeled = workers.map(w => new faceapi.LabeledFaceDescriptors(w.name, [new Float32Array(w.descriptor)]));
-        
-        if (labeled.length > 0) {
-          const matcher = new faceapi.FaceMatcher(labeled, 0.45);
-          const match = matcher.findBestMatch(detection.descriptor);
-
-          if (match.label === 'unknown') {
-            setLoginFailed(true);
-            stopCamera();
-            return;
-          }
-
-          let challengeMet = false;
-          if (livenessType === 'smile') {
-            const smileProb = detection.expressions.happy;
-            setLivenessProgress(smileProb * 100);
-            if (smileProb > 0.25) challengeMet = true;
-          } else {
-            const ratio = getMouthRatio(detection.landmarks);
-            setLivenessProgress(Math.min(ratio * 400, 100));
-            if (ratio > 0.18) challengeMet = true;
-          }
-
-          if (challengeMet) {
-            setLivenessProgress(100);
-            const person = workers.find(w => w.name === match.label);
-            setRecognizedPerson({ ...person, time: new Date().toLocaleTimeString() });
-            stopCamera();
-          }
-        } else {
-          setLoginFailed(true);
-          stopCamera();
-        }
-      }
-    } else if (canvasRef.current) {
-      const ctx = canvasRef.current.getContext('2d');
-      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    if (workers.length === 0) {
+      setLoginFailed(true);
+      stopCamera();
+      return;
     }
-    
-    requestRef.current = requestAnimationFrame(runDetection);
-  };
+
+    const labeled = workers.map(
+      w =>
+        new faceapi.LabeledFaceDescriptors(
+          w.name,
+          [new Float32Array(w.descriptor)]
+        )
+    );
+
+    const matcher = new faceapi.FaceMatcher(labeled, 0.45);
+    const match = matcher.findBestMatch(detection.descriptor);
+
+    if (match.label === 'unknown') {
+      setLoginFailed(true);
+      stopCamera();
+      return;
+    }
+
+    const person = workers.find(w => w.name === match.label);
+    setRecognizedPerson({
+      ...person,
+      time: new Date().toLocaleTimeString()
+    });
+
+    stopCamera();
+    return;
+  }
+
+  requestRef.current = requestAnimationFrame(runDetection);
+};
+
 
 
   
