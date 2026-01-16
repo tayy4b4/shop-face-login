@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, UserPlus, ShieldCheck, FileSpreadsheet, Trash2, Smile, Zap, AlertCircle, RefreshCw } from 'lucide-react';
+import { Camera, UserPlus, ShieldCheck, FileSpreadsheet, Trash2, Smile, AlertCircle, RefreshCw } from 'lucide-react';
 
 const FaceAttendanceSystem = () => {
   const [isModelLoaded, setIsModelLoaded] = useState(false);
@@ -9,7 +9,7 @@ const FaceAttendanceSystem = () => {
   const [recognizedPerson, setRecognizedPerson] = useState(null);
   const [loginFailed, setLoginFailed] = useState(false);
   
-  //LIVENESS STATES
+  //liveness states
   const [livenessType, setLivenessType] = useState('smile'); 
   const [livenessProgress, setLivenessProgress] = useState(0);
 
@@ -29,13 +29,14 @@ const FaceAttendanceSystem = () => {
     header: { textAlign: 'center', marginBottom: '2rem' },
     statusBadge: (ok) => ({ display: 'inline-block', padding: '4px 12px', borderRadius: '12px', fontSize: '11px', fontWeight: '600', textTransform: 'uppercase', backgroundColor: ok ? '#e8f5e9' : '#fff3e0', color: ok ? '#2e7d32' : '#ef6c00', marginBottom: '10px' }),
     videoWrapper: { position: 'relative', width: '100%', borderRadius: '16px', overflow: 'hidden', backgroundColor: '#f0f2f5', aspectRatio: '4/3', marginBottom: '1.5rem' },
-    btnPrimary: { width: '100%', padding: '14px', borderRadius: '12px', border: 'none', backgroundColor: '#000', color: '#fff', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' },
+    btnPrimary: { width: '200px', margin: '0 auto', padding: '14px', borderRadius: '12px', border: 'none', backgroundColor: '#000', color: '#fff', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' },
     btnSecondary: (active) => ({ flex: 1, padding: '10px', borderRadius: '10px', border: 'none', backgroundColor: active ? '#f0f2f5' : 'transparent', color: active ? '#000' : '#666', fontWeight: '600', cursor: 'pointer' }),
     input: { width: '100%', padding: '14px', borderRadius: '12px', border: '1px solid #e0e0e0', marginBottom: '1rem', outline: 'none', boxSizing: 'border-box' },
     workerRow: { display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #f8f9fa', alignItems: 'center' },
     progressBar: { width: '100%', height: '8px', backgroundColor: '#eee', borderRadius: '4px', marginTop: '10px', overflow: 'hidden' },
     progressFill: (p) => ({ width: `${p}%`, height: '100%', backgroundColor: '#4caf50', transition: '0.3s' }),
-    banner: (color) => ({ padding: '20px', backgroundColor: color, color: '#fff', borderRadius: '16px', textAlign: 'center' })
+    banner: (color) => ({ padding: '20px', backgroundColor: color, color: '#fff', borderRadius: '16px', textAlign: 'center' }),
+    guideOverlay: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', zIndex: 15, opacity: 0.5 }
   };
 
   const clearCanvas = () => {
@@ -56,6 +57,8 @@ const FaceAttendanceSystem = () => {
 
   const runDetection = async () => {
     const faceapi = getFaceApi();
+    
+    // Safety check: Don't run if video isn't ready or hidden
     if (!faceapi || !videoRef.current || videoRef.current.paused || !streamRef.current || recognizedPerson || loginFailed) {
       requestRef.current = requestAnimationFrame(runDetection);
       return;
@@ -68,56 +71,73 @@ const FaceAttendanceSystem = () => {
       .withFaceDescriptor();
 
     if (canvasRef.current && detection) {
-      const displaySize = { width: videoRef.current.offsetWidth, height: videoRef.current.offsetHeight };
-      faceapi.matchDimensions(canvasRef.current, displaySize);
+      // 1. Get exact current dimensions of the video on screen
+      const displaySize = { 
+        width: videoRef.current.clientWidth, 
+        height: videoRef.current.clientHeight 
+      };
+
+      // 2. Sync canvas size to video size (CRITICAL for Register mode)
+      if (canvasRef.current.width !== displaySize.width || canvasRef.current.height !== displaySize.height) {
+        faceapi.matchDimensions(canvasRef.current, displaySize);
+      }
+
       const ctx = canvasRef.current.getContext('2d');
-      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-      const resized = faceapi.resizeResults(detection, displaySize);
-      faceapi.draw.drawFaceLandmarks(canvasRef.current, resized);
+      ctx.clearRect(0, 0, displaySize.width, displaySize.height);
 
+      // 3. Resize results to match the displaySize
+      const resizedResults = faceapi.resizeResults(detection, displaySize);
+      
+      // 4. Draw landmarks
+      faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedResults);
+
+      // Login Logic
       if (mode === 'login') {
-        let challengeMet = false;
-        if (livenessType === 'smile') {
-          const smileProb = detection.expressions.happy;
-          setLivenessProgress(smileProb * 100);
-          if (smileProb > 0.4) challengeMet = true; 
-        } else {
-          const ratio = getMouthRatio(detection.landmarks);
-          setLivenessProgress(Math.min(ratio * 400, 100));
-          if (ratio > 0.22) challengeMet = true;
-        }
+        const labeled = workers.map(w => new faceapi.LabeledFaceDescriptors(w.name, [new Float32Array(w.descriptor)]));
+        
+        if (labeled.length > 0) {
+          const matcher = new faceapi.FaceMatcher(labeled, 0.45);
+          const match = matcher.findBestMatch(detection.descriptor);
 
-        if (challengeMet) {
-          setLivenessProgress(100);
-          performIdentityCheck(detection.descriptor);
+          if (match.label === 'unknown') {
+            setLoginFailed(true);
+            stopCamera();
+            return;
+          }
+
+          let challengeMet = false;
+          if (livenessType === 'smile') {
+            const smileProb = detection.expressions.happy;
+            setLivenessProgress(smileProb * 100);
+            if (smileProb > 0.25) challengeMet = true;
+          } else {
+            const ratio = getMouthRatio(detection.landmarks);
+            setLivenessProgress(Math.min(ratio * 400, 100));
+            if (ratio > 0.18) challengeMet = true;
+          }
+
+          if (challengeMet) {
+            setLivenessProgress(100);
+            const person = workers.find(w => w.name === match.label);
+            setRecognizedPerson({ ...person, time: new Date().toLocaleTimeString() });
+            stopCamera();
+          }
+        } else {
+          setLoginFailed(true);
+          stopCamera();
         }
       }
+    } else if (canvasRef.current) {
+      // Clear canvas if no face detected
+      const ctx = canvasRef.current.getContext('2d');
+      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     }
+    
     requestRef.current = requestAnimationFrame(runDetection);
   };
 
-  const performIdentityCheck = (descriptor) => {
-    const faceapi = getFaceApi();
-    if (workers.length === 0) {
-      setLoginFailed(true);
-      stopCamera();
-      return;
-    };
-    
-    const labeled = workers.map(w => new faceapi.LabeledFaceDescriptors(w.name, [new Float32Array(w.descriptor)]));
-    const matcher = new faceapi.FaceMatcher(labeled, 0.45);
-    const match = matcher.findBestMatch(descriptor);
 
-    if (match.label !== 'unknown') {
-      const person = workers.find(w => w.name === match.label);
-      setRecognizedPerson({ ...person, time: new Date().toLocaleTimeString() });
-      stopCamera();
-    } else {
-      setLoginFailed(true);
-      stopCamera();
-    }
-  };
-
+  
   const startCamera = async () => {
     stopCamera(); 
     clearCanvas();
@@ -191,9 +211,35 @@ const FaceAttendanceSystem = () => {
     return () => stopCamera();
   }, []);
 
+  useEffect(() => {
+    if (isModelLoaded && mode === 'register') {
+      startCamera();
+    } else {
+      stopCamera();
+    }
+  }, [mode, isModelLoaded]);
+
   useEffect(() => { localStorage.setItem('shop_workers', JSON.stringify(workers)); }, [workers]);
 
-  return (
+  return ( 
+  <div
+    style={{
+      position: 'fixed',
+      inset: 0,
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      background: '#f5f7fa',
+      overflowY: 'auto'
+    }}
+  >
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'center',
+        width: '100%'
+      }}
+    >
     <div style={s.container}>
       <div style={s.header}>
         <div style={s.statusBadge(isModelLoaded)}>{status}</div>
@@ -209,9 +255,27 @@ const FaceAttendanceSystem = () => {
         <video ref={videoRef} autoPlay muted playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', position: 'absolute' }} />
         <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, zIndex: 10, pointerEvents: 'none' }} />
         
-        {!streamRef.current && !recognizedPerson && !loginFailed && (
+        {/*head outline*/}
+        {streamRef.current && !recognizedPerson && !loginFailed && (
+          <div style={s.guideOverlay}>
+            <svg width="240" height="300" viewBox="0 0 240 300" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path 
+  d="M120 70C95 70 70 95 70 140C70 190 95 230 120 230C145 230 170 190 170 140C170 95 145 70 120 70Z" 
+  stroke="white" 
+  strokeWidth="3" 
+  strokeDasharray="8 8" 
+/>
+{/*eye level line*/}
+<line x1="85" y1="135" x2="155" y2="135" stroke="white" strokeWidth="1" opacity="0.3" />
+              <line x1="70" y1="120" x2="170" y2="120" stroke="white" strokeWidth="1" opacity="0.3" />
+            </svg>
+          </div>
+        )}
+
+        {/*start button conditions*/}
+        {!streamRef.current && !recognizedPerson && !loginFailed && mode === 'login' && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.8)', zIndex: 20 }}>
-            <button onClick={startCamera} style={s.btnPrimary}>Start</button>
+            <button onClick={startCamera} style={s.btnPrimary}>Start Scan</button>
           </div>
         )}
       </div>
@@ -220,9 +284,7 @@ const FaceAttendanceSystem = () => {
         <div style={{ marginBottom: '20px', textAlign: 'center' }}>
           <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
             {livenessType === 'smile' ? <Smile size={20} color="#2563eb" /> : <Smile size={20} color="#2563eb" />}
-            <span style={{ fontSize: '14px', fontWeight: '700', color: '#2563eb' }}>
-              {livenessType === 'smile' ? "Action: Smile!" : "Action: Open Mouth!"}
-            </span>
+            <span style={{ fontSize: '14px', fontWeight: '700', color: '#2563eb' }}>{livenessType === 'smile' ? "Action: Smile!" : "Action: Open Mouth!"}</span>
           </div>
           <div style={s.progressBar}><div style={s.progressFill(livenessProgress)} /></div>
         </div>
@@ -230,35 +292,25 @@ const FaceAttendanceSystem = () => {
 
       {mode === 'register' && (
         <div style={{ marginBottom: '1.5rem' }}>
-          <input placeholder="Name" value={newPersonName} onChange={e => setNewPersonName(e.target.value)} style={s.input} />
-          {streamRef.current && <button onClick={handleRegister} style={s.btnPrimary}><UserPlus size={18} /> Register worker</button>}
+          <input placeholder="Enter Full Name" value={newPersonName} onChange={e => setNewPersonName(e.target.value)} style={s.input} autoFocus />
+          {streamRef.current && newPersonName.trim().length > 0 && (
+            <button onClick={handleRegister} style={s.btnPrimary}><UserPlus size={18} /> Add To List</button>
+          )}
         </div>
       )}
 
-      {recognizedPerson && (
-        <div style={s.banner('#000')}>
-          <ShieldCheck size={32} style={{ color: '#4caf50', margin: '0 auto' }} />
-          <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '10px' }}>{recognizedPerson.name}</div>
-          <button onClick={startCamera} style={{ marginTop: '15px', background: '#333', color: '#fff', padding: '10px 20px', border: 'none', borderRadius: '10px', cursor: 'pointer', fontWeight: '700' }}>Next Person</button>
-        </div>
-      )}
-
-      {loginFailed && (
-        <div style={s.banner('#ef4444')}>
-          <AlertCircle size={32} style={{ color: '#fff', margin: '0 auto' }} />
-          <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '10px' }}>Not registered!</div>
-          <button onClick={startCamera} style={{ marginTop: '15px', background: '#fff', color: '#ef4444', padding: '10px 20px', border: 'none', borderRadius: '10px', cursor: 'pointer', fontWeight: '800', display: 'flex', alignItems: 'center', gap: '8px', margin: '15px auto 0' }}>
-            <RefreshCw size={16} /> try again
-          </button>
+      {(recognizedPerson || loginFailed) && (
+        <div style={s.banner(recognizedPerson ? '#000' : '#ef4444')}>
+          {recognizedPerson ? <ShieldCheck size={32} style={{ color: '#4caf50', margin: '0 auto' }} /> : <AlertCircle size={32} style={{ color: '#fff', margin: '0 auto' }} />}
+          <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '10px' }}>{recognizedPerson ? recognizedPerson.name : 'Not Registered!'}</div>
+          <button onClick={startCamera} style={{ marginTop: '15px', background: recognizedPerson ? '#333' : '#fff', color: recognizedPerson ? '#fff' : '#ef4444', padding: '10px 20px', border: 'none', borderRadius: '10px', cursor: 'pointer', fontWeight: '700' }}>{recognizedPerson ? 'Next Person' : 'Try Again'}</button>
         </div>
       )}
 
       <div style={{ marginTop: '2rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
           <span style={{ fontSize: '12px', color: '#999', fontWeight: '700' }}>STAFF LIST ({workers.length})</span>
-          <button onClick={exportCSV} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <FileSpreadsheet size={14} /> Export CSV
-          </button>
+          <button onClick={exportCSV} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}><FileSpreadsheet size={14} /> Export CSV</button>
         </div>
         <div style={{ maxHeight: '160px', overflowY: 'auto' }}>
           {workers.map(w => (
@@ -270,6 +322,8 @@ const FaceAttendanceSystem = () => {
         </div>
       </div>
     </div>
+  </div>
+  </div>
   );
 };
 
