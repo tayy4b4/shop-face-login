@@ -58,7 +58,6 @@ const FaceAttendanceSystem = () => {
   const runDetection = async () => {
     const faceapi = getFaceApi();
     
-    // Safety check: Don't run if video isn't ready or hidden
     if (!faceapi || !videoRef.current || videoRef.current.paused || !streamRef.current || recognizedPerson || loginFailed) {
       requestRef.current = requestAnimationFrame(runDetection);
       return;
@@ -71,13 +70,11 @@ const FaceAttendanceSystem = () => {
       .withFaceDescriptor();
 
     if (canvasRef.current && detection) {
-      // 1. Get exact current dimensions of the video on screen
       const displaySize = { 
         width: videoRef.current.clientWidth, 
         height: videoRef.current.clientHeight 
       };
 
-      // 2. Sync canvas size to video size (CRITICAL for Register mode)
       if (canvasRef.current.width !== displaySize.width || canvasRef.current.height !== displaySize.height) {
         faceapi.matchDimensions(canvasRef.current, displaySize);
       }
@@ -85,13 +82,10 @@ const FaceAttendanceSystem = () => {
       const ctx = canvasRef.current.getContext('2d');
       ctx.clearRect(0, 0, displaySize.width, displaySize.height);
 
-      // 3. Resize results to match the displaySize
       const resizedResults = faceapi.resizeResults(detection, displaySize);
       
-      // 4. Draw landmarks
       faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedResults);
 
-      // Login Logic
       if (mode === 'login') {
         const labeled = workers.map(w => new faceapi.LabeledFaceDescriptors(w.name, [new Float32Array(w.descriptor)]));
         
@@ -128,7 +122,6 @@ const FaceAttendanceSystem = () => {
         }
       }
     } else if (canvasRef.current) {
-      // Clear canvas if no face detected
       const ctx = canvasRef.current.getContext('2d');
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     }
